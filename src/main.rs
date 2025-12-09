@@ -735,13 +735,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth,
     });
 
-    // vnitřní router (bez prefixu)
+    // vnitřní router bez explicitního typu
     let inner = Router::new()
-        .route("/:application/:profile/:label", get(spring_handler))
-        .route("/:application/:profile", get(spring_handler_no_label))
-        .route("/file/:label/*path", get(file_handler))
-        .route("/ui", get(ui_handler))
-        .with_state(state.clone());
+        .route("/{application}/{profile}/{label}", get(spring_handler))
+        .route("/{application}/{profile}", get(spring_handler_no_label))
+        .route("/file/{label}/{*path}", get(file_handler))
+        .route("/ui", get(ui_handler));
 
     // prefix-path
     let base_path = config.http.base_path.clone();
@@ -756,6 +755,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         Router::new().nest(&bp, inner)
     };
+
+    let app = app.with_state(Arc::clone(&state));
 
     let addr: SocketAddr = config.http.bind_addr.parse()?;
     info!("[main] Listening on http://{}", addr);
