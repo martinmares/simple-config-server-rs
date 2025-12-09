@@ -19,7 +19,7 @@ use mime_guess::MimeGuess;
 use once_cell::sync::Lazy;
 use regex::{Captures, Regex};
 use serde::{Deserialize, Serialize};
-use serde_yaml::Value as YamlValue;
+use serde_yaml_ng::Value as YamlValue;
 use thiserror::Error;
 use tokio::{net::TcpListener, process::Command, time};
 use tracing::{debug, error, info, warn};
@@ -103,7 +103,7 @@ enum ServerError {
     Io(#[from] std::io::Error),
 
     #[error("YAML error: {0}")]
-    Yaml(#[from] serde_yaml::Error),
+    Yaml(#[from] serde_yaml_ng::Error),
 
     #[error("UTF-8 error: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
@@ -134,7 +134,7 @@ fn apply_template(input: &str, env_map: &HashMap<String, String>) -> String {
 /// Načtení configu z YAML souboru
 fn load_config(path: &Path) -> Result<Config, Box<dyn std::error::Error>> {
     let content = std::fs::read_to_string(path)?;
-    let cfg: Config = serde_yaml::from_str(&content)?;
+    let cfg: Config = serde_yaml_ng::from_str(&content)?;
     Ok(cfg)
 }
 
@@ -600,7 +600,7 @@ async fn read_and_merge_yaml_files(
             found_any = true;
             let content = String::from_utf8(bytes)?;
             let templated = apply_template(&content, env_map);
-            let yaml: YamlValue = serde_yaml::from_str(&templated)?;
+            let yaml: YamlValue = serde_yaml_ng::from_str(&templated)?;
             flatten_yaml_value(None, &yaml, &mut result);
         }
     }
