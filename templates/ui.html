@@ -54,7 +54,8 @@
     /* limit height of scrollable content areas */
     #env-json,
     #env-export,
-    #file-preview {
+    #file-preview,
+    #spring-preview {
       max-height: 33vh;
       overflow-y: auto;
     }
@@ -142,7 +143,7 @@
     .copy-button:hover {
       opacity: 1;
     }
-  
+
     /* visible scrollbars on dark background */
     pre,
     .files-container {
@@ -290,6 +291,59 @@
           ></i>
         </div>
         <pre id="env-export">Select environment…</pre>
+      </div>
+
+      <div class="ui inverted segment">
+        <div class="segment-header">
+          <h3 class="ui header">Spring config JSON preview</h3>
+          <i
+            class="copy icon copy-button"
+            title="Copy Spring JSON to clipboard"
+            onclick="copyPre('spring-preview')"
+          ></i>
+        </div>
+        <p style="font-size: 0.9rem; opacity: 0.8;">
+          Simulates a Spring Cloud Config client call for the currently selected environment.
+          Fill in <code>application</code>, <code>profile</code> and optional <code>label</code>.
+        </p>
+        <form class="ui inverted form" id="spring-form">
+          <div class="three fields">
+            <div class="field">
+              <label>Application</label>
+              <input
+                type="text"
+                id="spring-app"
+                placeholder="service-name"
+                value=""
+              />
+            </div>
+            <div class="field">
+              <label>Profile</label>
+              <input
+                type="text"
+                id="spring-profile"
+                placeholder="default"
+                value="default"
+              />
+            </div>
+            <div class="field">
+              <label>Label (optional)</label>
+              <input
+                type="text"
+                id="spring-label"
+                placeholder="main / release / empty"
+              />
+            </div>
+          </div>
+          <button class="ui teal button" type="submit">
+            Load preview
+          </button>
+          <span
+            id="spring-request-path"
+            style="margin-left: 1rem; font-size: 0.85rem; opacity: 0.7;"
+          ></span>
+        </form>
+        <pre id="spring-preview">Select environment and load preview…</pre>
       </div>
 
       <div class="ui inverted segment">
@@ -466,6 +520,76 @@ Click a file to preview its content after template expansion.</pre>
         });
     }
 
+
+    function setupSpringPreview() {
+      const form = document.getElementById("spring-form");
+      const previewEl = document.getElementById("spring-preview");
+      const pathEl = document.getElementById("spring-request-path");
+      if (!form || !previewEl || !pathEl) {
+        return;
+      }
+
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+
+        const env = byEnvName(currentEnv);
+        if (!env) {
+          previewEl.textContent = "No environment selected.";
+          return;
+        }
+
+        const appInput = document.getElementById("spring-app");
+        const profileInput = document.getElementById("spring-profile");
+        const labelInput = document.getElementById("spring-label");
+
+        const app = (appInput.value || "").trim();
+        const profile = (profileInput.value || "").trim() || "default";
+        const label = (labelInput.value || "").trim();
+
+        if (!app || !profile) {
+          previewEl.textContent = "Application and profile are required.";
+          return;
+        }
+
+        const base = apiBase();
+        const envName = encodeURIComponent(env.name);
+        let path = `${base}/${envName}/${encodeURIComponent(app)}/${encodeURIComponent(profile)}`;
+        if (label) {
+          path += `/${encodeURIComponent(label)}`;
+        }
+
+        pathEl.textContent = "GET " + path;
+        previewEl.textContent = "Loading...";
+
+        fetch(path, {
+          headers: {
+            Accept: "application/json",
+          },
+        })
+          .then((r) => {
+            if (!r.ok) {
+              return r.text().then((t) => {
+                throw new Error(
+                  "HTTP " + r.status + ": " + (t || r.statusText || "")
+                );
+              });
+            }
+            return r.json();
+          })
+          .then((data) => {
+            try {
+              previewEl.textContent = JSON.stringify(data, null, 2);
+            } catch (e) {
+              previewEl.textContent = "Received non-JSON response.";
+            }
+          })
+          .catch((err) => {
+            previewEl.textContent = "Error: " + err.message;
+          });
+      });
+    }
+
+
     // univerzální copy helper pro <pre> bloky
     function copyPre(id) {
       const pre = document.getElementById(id);
@@ -502,6 +626,7 @@ Click a file to preview its content after template expansion.</pre>
       if (META.auth_enabled) {
         // full mode: env JSON, exports, files, preview
         loadEnvPanels();
+        setupSpringPreview();
       } else {
         // read-only UI: only environment list & metadata
         const rightCol = document.getElementById("right-column");
