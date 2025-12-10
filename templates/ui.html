@@ -23,6 +23,14 @@
       background: #1b1c1d !important;
     }
 
+
+    /* keep the left column (Environments) visible when scrolling */
+    #left-column {
+      position: sticky;
+      top: 1rem;
+      align-self: flex-start;
+    }
+
     /* všechny nadpisy v invertovaných segmentech */
     .ui.inverted.segment .ui.header,
     .ui.inverted.segment h2,
@@ -38,6 +46,17 @@
       border-radius: 0.5rem;
       overflow-x: auto;
       font-size: 0.9rem;
+      border: 1px solid #333;
+      font-family: Menlo, Monaco, "SF Mono", "Fira Code", monospace;
+    }
+
+
+    /* limit height of scrollable content areas */
+    #env-json,
+    #env-export,
+    #file-preview {
+      max-height: 33vh;
+      overflow-y: auto;
     }
 
     .env-menu .item.active {
@@ -54,7 +73,7 @@
     }
 
     .files-container {
-      max-height: 260px;
+      max-height: 33vh;
       overflow-y: auto;
     }
 
@@ -123,6 +142,36 @@
     .copy-button:hover {
       opacity: 1;
     }
+  
+    /* visible scrollbars on dark background */
+    pre,
+    .files-container {
+      scrollbar-color: #555 #1b1c1d;
+      scrollbar-width: thin;
+    }
+
+    pre::-webkit-scrollbar,
+    .files-container::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    pre::-webkit-scrollbar-track,
+    .files-container::-webkit-scrollbar-track {
+      background: #1b1c1d;
+    }
+
+    pre::-webkit-scrollbar-thumb,
+    .files-container::-webkit-scrollbar-thumb {
+      background-color: #555;
+      border-radius: 4px;
+    }
+
+    pre::-webkit-scrollbar-thumb:hover,
+    .files-container::-webkit-scrollbar-thumb:hover {
+      background-color: #777;
+    }
+
   </style>
 </head>
 <body>
