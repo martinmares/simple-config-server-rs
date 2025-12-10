@@ -1066,6 +1066,7 @@ async fn ui_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     struct UiMeta {
         base_path: String,
         environments: Vec<EnvMeta>,
+        auth_enabled: bool,
     }
 
     let mut envs_meta = Vec::new();
@@ -1110,6 +1111,7 @@ async fn ui_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     let meta = UiMeta {
         base_path: normalize_base_path(&state.http.base_path),
         environments: envs_meta,
+        auth_enabled: state.auth.required,
     };
 
     let meta_json = match serde_json::to_string(&meta) {

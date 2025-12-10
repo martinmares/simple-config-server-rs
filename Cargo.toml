@@ -1,6 +1,6 @@
 [package]
 name = "secure-config-server"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 
 [dependencies]
@@ -19,4 +19,3 @@ http = "1.4"
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 chrono = { version = "0.4.42", features = ["clock"] }
-

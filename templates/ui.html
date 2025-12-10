@@ -136,7 +136,7 @@
 
   <div id="main-content" class="ui grid">
     <!-- left column: env list + selected env -->
-    <div class="four wide column">
+    <div id="left-column" class="four wide column">
       <div class="ui inverted segment">
         <h3 class="ui header">Environments</h3>
         <div id="env-list" class="ui inverted vertical menu env-menu"></div>
@@ -218,7 +218,7 @@
     </div>
 
     <!-- right column: env vars + files -->
-    <div class="twelve wide column">
+    <div id="right-column" class="twelve wide column">
       <div class="ui inverted segment">
         <div class="segment-header">
           <h3 class="ui header">Environment variables (JSON)</h3>
@@ -302,7 +302,9 @@ Click a file to preview its content after template expansion.</pre>
           currentEnv = env.name;
           renderEnvList();
           renderEnvDetails();
-          loadEnvPanels();
+          if (META.auth_enabled) {
+            loadEnvPanels();
+          }
         };
         container.appendChild(item);
       });
@@ -447,7 +449,22 @@ Click a file to preview its content after template expansion.</pre>
 
       renderEnvList();
       renderEnvDetails();
-      loadEnvPanels();
+
+      if (META.auth_enabled) {
+        // full mode: env JSON, exports, files, preview
+        loadEnvPanels();
+      } else {
+        // read-only UI: only environment list & metadata
+        const rightCol = document.getElementById("right-column");
+        if (rightCol) {
+          rightCol.style.display = "none";
+        }
+        const leftCol = document.getElementById("left-column");
+        if (leftCol) {
+          leftCol.classList.remove("four", "wide");
+          leftCol.classList.add("sixteen", "wide");
+        }
+      }
     });
   </script>
 </body>
