@@ -10,7 +10,7 @@ use axum::{
     extract::{OriginalUri, Path as AxumPath, State},
     http::{
         HeaderMap, StatusCode,
-        header::{AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE},
+        header::{AUTHORIZATION, CONTENT_TYPE, HeaderName, WWW_AUTHENTICATE},
     },
     response::{Html, IntoResponse, Response},
     routing::get,
@@ -52,7 +52,12 @@ struct Cli {
 #[derive(Debug, Clone, Deserialize)]
 struct GitConfig {
     repo_url: String,
+    /// Default branch used when no label is provided (e.g. "main")
+    #[serde(default = "default_branch_name")]
     branch: String,
+    /// Optional list of allowed branches/labels (e.g. ["main", "release"])
+    #[serde(default)]
+    branches: Vec<String>,
     workdir: PathBuf,
     #[serde(default)]
     subpath: Option<PathBuf>,
@@ -60,8 +65,34 @@ struct GitConfig {
     refresh_interval_secs: u64,
 }
 
+fn default_branch_name() -> String {
+    "main".to_string()
+}
+
 fn default_refresh_interval() -> u64 {
     30
+}
+
+impl GitConfig {
+    /// Ensure that `branches` always contains at least the default `branch`,
+    /// and that `branch` is the first element in the list.
+    fn normalize_branches(&mut self) {
+        if self.branches.is_empty() {
+            if !self.branch.is_empty() {
+                self.branches.push(self.branch.clone());
+            }
+        } else if !self.branches.iter().any(|b| b == &self.branch) {
+            self.branches.insert(0, self.branch.clone());
+        } else {
+            // Move existing default branch to the front if it's not already
+            if let Some(pos) = self.branches.iter().position(|b| b == &self.branch) {
+                if pos != 0 {
+                    let val = self.branches.remove(pos);
+                    self.branches.insert(0, val);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -78,6 +109,49 @@ fn default_base_path() -> String {
 /// Root configuration supports:
 /// - single instance: `git` + optional global env
 /// - multi-tenant: `environments` + optional global env
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ClientIdClientConfig {
+    /// Public identifier passed in the header (e.g. "x-client-id")
+    id: String,
+    /// Optional human readable description
+    #[serde(default)]
+    #[allow(dead_code)]
+    description: Option<String>,
+    /// Allowed environments, e.g. ["dev", "test"] or ["*"] for all
+    #[serde(default)]
+    environments: Vec<String>,
+    /// Granted scopes, e.g. ["config:read", "files:read", "env:read"]
+    #[serde(default)]
+    scopes: Vec<String>,
+    /// Whether this client may access the HTML UI
+    #[serde(default)]
+    ui_access: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct ClientIdAuthConfig {
+    /// Turn on header based auth
+    #[serde(default)]
+    enabled: bool,
+    /// Header name to read the client id from (default "x-client-id")
+    #[serde(default = "default_client_id_header_name")]
+    header_name: String,
+    /// List of allowed clients
+    #[serde(default)]
+    clients: Vec<ClientIdClientConfig>,
+}
+
+fn default_client_id_header_name() -> String {
+    "x-client-id".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct RootAuthConfig {
+    /// Configuration for X-Client-Id style auth
+    #[serde(default)]
+    client_id: ClientIdAuthConfig,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct RootConfig {
     http: HttpConfig,
@@ -97,6 +171,10 @@ struct RootConfig {
     /// Multi-tenant mode
     #[serde(default)]
     environments: HashMap<String, EnvDefinition>,
+
+    /// Authentication / authorization configuration
+    #[serde(default)]
+    auth: RootAuthConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,34 +192,106 @@ struct EnvState {
 }
 
 #[derive(Clone)]
+struct ClientIdClient {
+    id: String,
+    environments: Vec<String>,
+    scopes: Vec<String>,
+    ui_access: bool,
+}
+
+#[derive(Clone)]
+struct ClientIdAuth {
+    enabled: bool,
+    header_name: HeaderName,
+    clients: HashMap<String, ClientIdClient>,
+}
+
+impl ClientIdAuth {
+    fn from_config(cfg: &ClientIdAuthConfig) -> Self {
+        let mut clients_map = HashMap::new();
+
+        for c in &cfg.clients {
+            let envs = if c.environments.is_empty() {
+                vec!["*".to_string()]
+            } else {
+                c.environments.clone()
+            };
+
+            let client = ClientIdClient {
+                id: c.id.clone(),
+                environments: envs,
+                scopes: c.scopes.clone(),
+                ui_access: c.ui_access,
+            };
+
+            clients_map.insert(client.id.clone(), client);
+        }
+
+        let header_name = HeaderName::from_bytes(cfg.header_name.as_bytes())
+            .unwrap_or(HeaderName::from_static("x-client-id"));
+
+        if cfg.enabled {
+            info!(
+                "[auth] X-Client-Id auth enabled ({} clients, header={})",
+                clients_map.len(),
+                header_name.as_str()
+            );
+        } else if !clients_map.is_empty() {
+            warn!("[auth] X-Client-Id clients configured but auth.client_id.enabled=false");
+        } else {
+            info!("[auth] X-Client-Id auth disabled");
+        }
+
+        Self {
+            enabled: cfg.enabled,
+            header_name,
+            clients: clients_map,
+        }
+    }
+
+    fn get_client<'a>(&'a self, headers: &'a HeaderMap) -> Option<&'a ClientIdClient> {
+        if !self.enabled {
+            return None;
+        }
+        let value = headers.get(&self.header_name)?;
+        let id = value.to_str().ok()?;
+        self.clients.get(id)
+    }
+}
+
+#[derive(Clone)]
 struct AuthConfig {
+    /// Whether basic auth is required (AUTH_USERNAME/PASSWORD set)
     required: bool,
     username: String,
     password: String,
+    /// Optional X-Client-Id based auth
+    client_id: ClientIdAuth,
 }
 
 impl AuthConfig {
-    fn from_env() -> Self {
+    fn from_env_and_config(auth_cfg: &RootAuthConfig) -> Self {
         let user = std::env::var("AUTH_USERNAME").ok();
         let pass = std::env::var("AUTH_PASSWORD").ok();
 
-        match (user, pass) {
+        let (required, username, password) = match (user, pass) {
             (Some(u), Some(p)) => {
                 info!("[auth] Basic auth enabled");
-                Self {
-                    required: true,
-                    username: u,
-                    password: p,
-                }
+                (true, u, p)
             }
             _ => {
                 warn!("[auth] Basic auth disabled (env AUTH_USERNAME / AUTH_PASSWORD not set)");
-                Self {
-                    required: false,
-                    username: String::new(),
-                    password: String::new(),
-                }
+                (false, String::new(), String::new())
             }
+        };
+
+        let client_id = ClientIdAuth::from_config(&auth_cfg.client_id);
+
+        Self {
+            required,
+            username,
+            password,
+            client_id,
         }
     }
 }
@@ -153,6 +303,7 @@ struct AppState {
     startup_time: chrono::DateTime<Utc>,
 }
 
+/// ---------- Errors ----------
 /// ---------- Errors ----------
 
 #[derive(Error, Debug)]
@@ -218,22 +369,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 merge_env_file_into(path, &mut env_map);
             }
 
+            let mut git_cfg = env_def.git.clone();
+            git_cfg.normalize_branches();
+
             envs.insert(
                 name.clone(),
                 EnvState {
                     name: name.clone(),
-                    git: env_def.git.clone(),
+                    git: git_cfg,
                     env_map: Arc::new(env_map),
                 },
             );
         }
     } else if let Some(ref git) = root_cfg.git {
         // Single-instance, exposed as logical env "default"
+        let mut git_cfg = git.clone();
+        git_cfg.normalize_branches();
+
         envs.insert(
             "default".to_string(),
             EnvState {
                 name: "default".to_string(),
-                git: git.clone(),
+                git: git_cfg,
                 env_map: Arc::new(global_env.clone()),
             },
         );
@@ -241,7 +398,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("config.yaml must contain either `git` or `environments`".into());
     }
 
-    let auth = AuthConfig::from_env();
+    let auth = AuthConfig::from_env_and_config(&root_cfg.auth);
 
     // Initial sync for all envs
     for env in envs.values() {
@@ -341,7 +498,6 @@ async fn sync_git_repo(git: &GitConfig) -> Result<(), ServerError> {
             .arg("clone")
             .arg("--branch")
             .arg(&git.branch)
-            .arg("--single-branch")
             .arg(&git.repo_url)
             .arg(&git.workdir)
             .output()
@@ -365,8 +521,9 @@ async fn sync_git_repo(git: &GitConfig) -> Result<(), ServerError> {
             .arg("-C")
             .arg(&git.workdir)
             .arg("fetch")
-            .arg("--all")
+            .arg("origin")
             .arg("--prune")
+            .arg("+refs/heads/*:refs/remotes/origin/*")
             .output()
             .await?;
 
@@ -420,16 +577,28 @@ async fn git_sync_loop(git: GitConfig) {
     }
 }
 
+fn build_git_rev(git: &GitConfig, label: Option<&str>) -> String {
+    let name = match label {
+        Some(l) => l,
+        None => &git.branch,
+    };
+
+    if name.contains('/') {
+        name.to_string()
+    } else {
+        format!("origin/{}", name)
+    }
+}
 async fn git_version_for_label(
     git: &GitConfig,
     label: Option<&str>,
 ) -> Result<String, ServerError> {
-    let rev = label.unwrap_or(&git.branch);
+    let rev = build_git_rev(git, label);
     let output = Command::new("git")
         .arg("-C")
         .arg(&git.workdir)
         .arg("rev-parse")
-        .arg(rev)
+        .arg(&rev)
         .output()
         .await?;
 
@@ -450,14 +619,14 @@ async fn git_commit_date_for_label(
     git: &GitConfig,
     label: Option<&str>,
 ) -> Result<String, ServerError> {
-    let rev = label.unwrap_or(&git.branch);
+    let rev = build_git_rev(git, label);
     let output = Command::new("git")
         .arg("-C")
         .arg(&git.workdir)
         .arg("show")
         .arg("-s")
         .arg("--format=%cI")
-        .arg(rev)
+        .arg(&rev)
         .output()
         .await?;
 
@@ -490,7 +659,7 @@ async fn read_file_from_git(
         .ok_or_else(|| ServerError::BadRequest("Non-UTF8 path".to_string()))?
         .replace('\\', "/");
 
-    let rev = label_opt.unwrap_or(&git.branch);
+    let rev = build_git_rev(git, label_opt);
     let spec = format!("{}:{}", rev, rel_str);
 
     let output = Command::new("git")
@@ -509,13 +678,14 @@ async fn read_file_from_git(
 }
 
 async fn list_files_in_git(git: &GitConfig) -> Result<Vec<String>, ServerError> {
+    let rev = build_git_rev(git, None);
     let output = Command::new("git")
         .arg("-C")
         .arg(&git.workdir)
         .arg("ls-tree")
         .arg("-r")
         .arg("--name-only")
-        .arg(&git.branch)
+        .arg(&rev)
         .output()
         .await?;
 
@@ -805,11 +975,15 @@ async fn handle_spring_request(
 
 /// ---------- HTTP helpers ----------
 
-fn check_basic_auth(state: &AppState, headers: &HeaderMap) -> bool {
-    if !state.auth.required {
-        return true;
-    }
+#[derive(Clone, Copy)]
+enum AuthScope {
+    ConfigRead,
+    FilesRead,
+    EnvRead,
+}
 
+/// Basic-auth check only (no fallback semantics)
+fn check_basic_auth_only(state: &AppState, headers: &HeaderMap) -> bool {
     let value = match headers.get(AUTHORIZATION) {
         Some(v) => v,
         None => return false,
@@ -836,6 +1010,75 @@ fn check_basic_auth(state: &AppState, headers: &HeaderMap) -> bool {
     let pass = parts.next().unwrap_or("");
 
     user == state.auth.username && pass == state.auth.password
+}
+
+fn client_has_env(client: &ClientIdClient, env: Option<&str>) -> bool {
+    match env {
+        None => true,
+        Some(e) => {
+            if client.environments.iter().any(|v| v == "*") {
+                true
+            } else {
+                client.environments.iter().any(|v| v == e)
+            }
+        }
+    }
+}
+
+fn client_has_scope(client: &ClientIdClient, scope: AuthScope) -> bool {
+    let needed = match scope {
+        AuthScope::ConfigRead => "config:read",
+        AuthScope::FilesRead => "files:read",
+        AuthScope::EnvRead => "env:read",
+    };
+    client.scopes.iter().any(|s| s == needed)
+}
+
+/// Combined authorization for basic + X-Client-Id
+fn is_authorized_for(
+    state: &AppState,
+    headers: &HeaderMap,
+    env: Option<&str>,
+    scope: Option<AuthScope>,
+) -> bool {
+    let basic_enabled = state.auth.required;
+    let client_auth = &state.auth.client_id;
+    let client_enabled = client_auth.enabled;
+
+    // No auth configured at all -> open access (backwards compatible)
+    if !basic_enabled && !client_enabled {
+        return true;
+    }
+
+    // 1) Basic auth
+    if basic_enabled && check_basic_auth_only(state, headers) {
+        return true;
+    }
+
+    // 2) X-Client-Id
+    if client_enabled {
+        if let Some(client) = client_auth.get_client(headers) {
+            if !client_has_env(client, env) {
+                return false;
+            }
+
+            match scope {
+                // UI access
+                None => {
+                    if client.ui_access {
+                        return true;
+                    }
+                }
+                Some(s) => {
+                    if client_has_scope(client, s) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    false
 }
 
 fn unauthorized_response() -> Response {
@@ -869,7 +1112,7 @@ async fn spring_handler(
     AxumPath((env, application, profile, label)): AxumPath<(String, String, String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if !check_basic_auth(&state, &headers) {
+    if !is_authorized_for(&state, &headers, Some(&env), Some(AuthScope::ConfigRead)) {
         return unauthorized_response();
     }
 
@@ -895,7 +1138,7 @@ async fn spring_handler_no_label(
     AxumPath((env, application, profile)): AxumPath<(String, String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if !check_basic_auth(&state, &headers) {
+    if !is_authorized_for(&state, &headers, Some(&env), Some(AuthScope::ConfigRead)) {
         return unauthorized_response();
     }
 
@@ -928,7 +1171,7 @@ async fn env_json_handler(
     AxumPath(env): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !check_basic_auth(&state, &headers) {
+    if !is_authorized_for(&state, &headers, Some(&env), Some(AuthScope::EnvRead)) {
         return unauthorized_response();
     }
 
@@ -948,7 +1191,7 @@ async fn env_export_handler(
     AxumPath(env): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !check_basic_auth(&state, &headers) {
+    if !is_authorized_for(&state, &headers, Some(&env), Some(AuthScope::EnvRead)) {
         return unauthorized_response();
     }
 
@@ -980,14 +1223,14 @@ async fn env_files_handler(
     AxumPath(env): AxumPath<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !check_basic_auth(&state, &headers) {
+    if !is_authorized_for(&state, &headers, Some(&env), Some(AuthScope::FilesRead)) {
         return unauthorized_response();
     }
 
     let env_state = match state.envs.get(&env) {
         Some(e) => e,
         None => {
-            let path = format!("/{}/files", env);
+            let path = format!("/{}/assets", env);
             return spring_not_found_json(&path);
         }
     };
@@ -1001,59 +1244,45 @@ async fn env_files_handler(
     }
 }
 
-async fn file_handler(
-    State(state): State<Arc<AppState>>,
-    AxumPath((env, label, rel_path)): AxumPath<(String, String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    if !check_basic_auth(&state, &headers) {
-        return unauthorized_response();
-    }
-
-    let env_state = match state.envs.get(&env) {
-        Some(e) => e,
-        None => {
-            let path = format!("/{}/file/{}/{}", env, label, rel_path);
-            return spring_not_found_json(&path);
-        }
-    };
-
-    match handle_file_request(env_state, Some(&label), &rel_path).await {
-        Ok(resp) => resp,
-        Err(ServerError::NotFound) => {
-            let path = format!("/{}/file/{}/{}", env, label, rel_path);
-            spring_not_found_json(&path)
-        }
-        Err(e) => {
-            error!("[file] error: {:?}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
-        }
-    }
-}
-
 async fn env_file_handler(
     State(state): State<Arc<AppState>>,
     AxumPath((env, rel_path)): AxumPath<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    if !check_basic_auth(&state, &headers) {
+    if !is_authorized_for(&state, &headers, Some(&env), Some(AuthScope::FilesRead)) {
         return unauthorized_response();
     }
 
     let env_state = match state.envs.get(&env) {
         Some(e) => e,
         None => {
-            // For non-existing environment, return plain 404 JSON similar to spring 404 style,
-            // but specific to this REST-ish files endpoint.
+            // For non-existing environment, return plain 404 (REST-ish).
             return (StatusCode::NOT_FOUND, "Environment not found").into_response();
         }
     };
 
-    match handle_file_request(env_state, None, &rel_path).await {
+    // rel_path may be either:
+    //   "{path}"                -> default branch
+    //   "{label}/{path...}"     -> explicit git label
+    let mut parts = rel_path.splitn(2, '/');
+    let first = match parts.next() {
+        Some(f) if !f.is_empty() => f,
+        _ => return (StatusCode::NOT_FOUND, "File not found").into_response(),
+    };
+
+    let res = if let Some(rest) = parts.next() {
+        // label + path
+        handle_file_request(env_state, Some(first), rest).await
+    } else {
+        // only path, use default branch
+        handle_file_request(env_state, None, first).await
+    };
+
+    match res {
         Ok(resp) => resp,
         Err(ServerError::NotFound) => (StatusCode::NOT_FOUND, "File not found").into_response(),
         Err(e) => {
-            error!("[files] error: {:?}", e);
+            error!("[assets] error: {:?}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "Internal Server Error").into_response()
         }
     }
@@ -1230,7 +1459,7 @@ async fn healthz_env_single_handler(
 }
 
 async fn ui_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
-    if !check_basic_auth(&state, &headers) {
+    if !is_authorized_for(&state, &headers, None, None) {
         return unauthorized_response();
     }
 
@@ -1294,7 +1523,7 @@ async fn ui_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
     let meta = UiMeta {
         base_path: normalize_base_path(&state.http.base_path),
         environments: envs_meta,
-        auth_enabled: state.auth.required,
+        auth_enabled: state.auth.required || state.auth.client_id.enabled,
     };
 
     let meta_json = match serde_json::to_string(&meta) {
@@ -1318,12 +1547,12 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/helthz", get(healthz_handler)) // alias for typo-friendly access
         .route("/healthz/env", get(healthz_env_all_handler))
         .route("/healthz/env/{env}", get(healthz_env_single_handler))
-        // File listing & raw file access with templating for non-Spring clients
-        .route("/{env}/files", get(env_files_handler))
-        .route("/{env}/files/{*path}", get(env_file_handler))
-        // Raw file access with explicit label (advanced):
-        // /{env}/file/{label}/{*path}
-        .route("/{env}/file/{label}/{*path}", get(file_handler))
+        // Asset listing & raw asset access with templating for non-Spring clients
+        .route("/{env}/assets", get(env_files_handler))
+        // Assets endpoint supports both:
+        //   /{env}/assets/{path}              -> default branch
+        //   /{env}/assets/{label}/{path...}   -> explicit git label (branch/tag)
+        .route("/{env}/assets/{*path}", get(env_file_handler))
         // Spring-compatible: /{env}/{application}/{profile}/{label}
         .route(
             "/{env}/{application}/{profile}/{label}",

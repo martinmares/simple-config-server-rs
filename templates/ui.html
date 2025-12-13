@@ -463,8 +463,8 @@ Click a file to preview its content after template expansion.</pre>
             "Failed to load export view.";
         });
 
-      // /{env}/files
-      fetch(`${base}/${envName}/files`)
+      // /{env}/assets
+      fetch(`${base}/${envName}/assets`)
         .then((r) => (r.ok ? r.json() : Promise.reject(r)))
         .then((data) => {
           const files = (data && data.files) || [];
@@ -506,8 +506,8 @@ Click a file to preview its content after template expansion.</pre>
       const envName = encodeURIComponent(env.name);
       const path = encodeURIComponent(relPath);
 
-      // Uses the REST-ish files endpoint: /{env}/files/{path}
-      const url = `${base}/${envName}/files/${path}`;
+      // Uses the REST-ish assets endpoint: /{env}/assets/{path}
+      const url = `${base}/${envName}/assets/${path}`;
 
       fetch(url)
         .then((r) => r.text())
