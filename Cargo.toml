@@ -1,6 +1,6 @@
 [package]
 name = "simple-config-server"
-version = "0.2.4"
+version = "1.0.0"
 edition = "2024"
 
 [dependencies]
