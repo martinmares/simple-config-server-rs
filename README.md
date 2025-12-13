@@ -1,321 +1,374 @@
-# Simple Config Server
+# simple-config-server
 
-A small Rust service that acts as a **secure, Spring Cloud Config-compatible server** with a few extra features:
+A small Rust service that behaves like a **read‑only Spring Cloud Config Server**, but with a few extras:
 
-* Serves configuration from one or more Git repositories (local `file://` or remote).
-* Mostly drop-in compatible with **Spring Cloud Config Server JSON endpoints**, with an extra **environment segment**:
-  * `/{env}/{application}/{profile}`
-  * `/{env}/{application}/{profile}/{label}`
-* Supports **labels as Git refs** (branches/tags/commits).
-* Supports **search paths** via configurable `subpath` (like `search-paths` in Spring).
-* Extra **file and env endpoints** for non-Spring clients (shell, Python, C++, …).
-* Simple templating for text files using `{{ VAR }}` placeholders filled from environment variables.
-* Optional **HTTP Basic Auth** using environment variables.
-* Small HTML UI on `/ui` with per-environment repo / branch / commit information, env preview and templated file preview.
-* Structured logging via `tracing`.
+* multi‑tenant environments (`dev`, `test`, `ref`, `prod`, …),
+* templating of text files using environment variables (`{{ VAR_NAME }}`),
+* lightweight HTML UI for inspection and debugging,
+* optional **HTTP Basic Auth** and **`X-Client-Id` header based auth**,
+* additional endpoints for non‑Spring clients (env JSON/export + raw assets).
+
+It is designed to run inside Kubernetes, but works equally well as a simple binary on your laptop.
 
 ---
 
-## 1. High-level architecture
+## 1. High‑level model
 
-The server is stateless and reads all configuration from Git repositories. It supports two configuration modes:
+The server reads configuration from:
 
-* **Single-instance** – one Git repo + one logical environment (`default`).
-* **Multi-tenant** – multiple logical environments (`dev`, `test`, `ref`, `prod`, …), each with its own Git config and optional env file.
+* one or more **Git repositories** (per environment),
+* one or more **env files** (`KEY=VALUE` per line),
+* optional **process environment** (real OS env vars).
 
-On startup it:
+For each logical environment (e.g. `dev`, `test`):
 
-* Parses `config.yaml`.
-* Determines whether it is running in **single-instance** or **multi-tenant** mode.
-* Clones or fetches the configured Git repository/ies into local `workdir` directories.
-* Builds a **global environment map** (from `env_from_process` / global `env_file`).
-* For each configured environment, builds an **effective env map**:
-  * `global env` ∪ `environment-specific env_file` (later values override earlier ones).
+1. The server periodically fetches & resets a local Git workdir.
+2. For each request, it:
+   * chooses the right environment (`{env}` segment in the URL),
+   * optionally chooses a Git **label** (`{label}` = branch or tag),
+   * loads and templates YAML files (`application.yml`, `<application>.yml`, profile-specific variants),
+   * flattens YAML into a Spring‑style JSON structure.
 
-In the background it periodically runs `git fetch` / `git reset --hard origin/<branch>` for each environment to keep the local `workdir` in sync.
+You can run it in two modes:
 
-For each HTTP request it:
-
-* Resolves the Git **ref** (branch/tag/commit) based on the `label` parameter (or default branch if `label` is missing).
-* Reads the requested file(s) via `git show <ref>:<subpath>/<path>` – no local checkout switching.
-* For text files, applies `{{ VAR }}` templating using the environment map for the addressed environment.
-* For Spring-style requests, flattens YAML into a JSON structure compatible with Spring Cloud Config.
-
-Git is accessed via the `git` CLI, so **`git` must be installed** and on `PATH`.
+* **Single‑instance**: one Git config for everything (`git` at the root of `config.yaml`).
+* **Multi‑tenant**: multiple environments under `environments:` in `config.yaml`.
 
 ---
 
 ## 2. Configuration (`config.yaml`)
 
-The root configuration looks like this:
+### 2.1 Root structure
 
 ```yaml
 http:
   bind_addr: "127.0.0.1:8899"
-  base_path: "/"             # e.g. "/config" behind a reverse proxy
+  base_path: "/config"   # optional prefix for all routes
 
 # optional global env sources
-env_from_process: true       # take all process env vars
-env_file: "/app/config/common.env"   # additional KEY=VALUE pairs
+env_from_process: true          # take current process env as a base map
+env_file: "/app/config/global.env"
 
-# EITHER single-instance...
+# optional auth config (Basic + X-Client-Id)
+auth:
+  client_id:
+    enabled: true
+    header_name: "x-client-id"
+    clients:
+      - id: "ci"
+        description: "CI pipeline"
+        environments: ["dev", "test"]      # or ["*"] for all envs
+        scopes: ["config:read", "files:read"]
+        ui_access: false
+      - id: "ops"
+        description: "Ops dashboards"
+        environments: ["*"]
+        scopes: ["config:read", "files:read", "env:read"]
+        ui_access: true
+
+# Either single-instance:
 git:
-  repo_url: "file:///…/example-configs"
-  branch: "main"
-  workdir: "/…/config.wrk"
-  subpath: "test"
+  repo_url: "file:///…/config-repo"
+  branch: "main"                  # default branch
+  branches: ["main", "release"]   # optional list of allowed labels
+  workdir: "/var/lib/simple-config-server/workdir"
+  subpath: "dev"                  # optional repo subdirectory
   refresh_interval_secs: 30
 
-# ...OR multi-tenant (if `environments` is present, it wins)
-environments:
-  dev:
-    git:
-      repo_url: "file:///…/example-configs"
-      branch: "main"
-      workdir: "/…/config-dev.wrk"
-      subpath: "dev"
-      refresh_interval_secs: 30
-    env_file: "/app/config/dev.env"
-
-  test:
-    git:
-      repo_url: "file:///…/example-configs"
-      branch: "main"
-      workdir: "/…/config-test.wrk"
-      subpath: "test"
-      refresh_interval_secs: 30
-    env_file: "/app/config/test.env"
+# Or multi-tenant:
+# environments:
+#   dev:
+#     git: { ... }
+#     env_file: "/app/config/dev.env"
+#   test:
+#     git: { ... }
+#     env_file: "/app/config/test.env"
 ```
 
-### 2.1 Single-instance vs multi-tenant
+Rules:
 
-The mode is determined automatically:
+* If **`environments`** is present → multi‑tenant mode.
+* If **`environments`** is absent and **`git`** is present → single‑instance mode.
+* If `env_from_process: true`, then all OS env vars are loaded into a **global env map**.
+* If root‑level `env_file` is set, it is loaded and merged into the global map.
+* For each environment (`environments.<name>.env_file`), that env file is loaded and overrides global keys.
 
-* **Single-instance**:
-  * `git` section present.
-  * `environments` map is **empty**.
-  * The server exposes a single logical environment named **`default`**.
-  * Spring endpoints become:
-    * `/{env}/{application}/{profile}` → `/default/{application}/{profile}`
-    * `/{env}/{application}/{profile}/{label}` → `/default/{application}/{profile}/{label}`
+The final **template env map for a given env** is:
 
-* **Multi-tenant**:
-  * `environments` map is **non-empty**.
-  * Each key under `environments` is an environment name (`dev`, `test`, `ref`, `prod`, …).
-  * Each environment has its own `git` and optional `env_file`.
-  * Spring endpoints are called with the environment explicitly:
-    * `/dev/config-client/dev`
-    * `/test/user-management/default`
-    * `/prod/config-client/dev/release`
-  * Single `git` section at root is ignored when `environments` is present.
+1. process env (if `env_from_process=true`),
+2. root `env_file` (if present),
+3. per‑environment `env_file` (if present).
 
-### 2.2 Global vs per-environment env
+Later values override earlier ones.
 
-Environment variables used for templating are built as:
+### 2.2 Git config
 
-```text
-effective_env(env_name) = global_env ∪ env_specific_env_file(env_name)
+`GitConfig` fields:
+
+```yaml
+git:
+  repo_url: "file:///…/config-repo"
+  branch: "main"                  # default branch used when no label given
+  branches: ["main", "release"]   # optional list of allowed labels
+  workdir: "/var/lib/simple-config-server/dev"
+  subpath: "dev"                  # optional path inside the repo
+  refresh_interval_secs: 30       # how often to git fetch/reset (seconds)
 ```
 
-Where:
+Notes:
 
-* `global_env` is composed of:
-  * all process variables if `env_from_process: true`
-  * plus all KEY=VALUE pairs from global `env_file` (if specified)
-* `env_specific_env_file(env_name)`:
-  * KEY=VALUE pairs from `environments.<env_name>.env_file` (if specified)
+* On startup and then every `refresh_interval_secs`, the server runs a `git fetch` and hard reset to the configured ref.
+* Internally, `branches` is normalized so that:
+  * the default `branch` is always present,
+  * the default `branch` is always the first element.
 
-Per-environment values **override** global ones in case of duplicate keys.
+If `branches` is empty, it is treated as `["<branch>"]`.
 
 ---
 
-## 3. Spring Cloud Config compatibility
+## 3. Spring‑compatible endpoints
 
-The main goal is to behave like Spring Cloud Config for the JSON environment endpoints, but with an explicit environment prefix.
+All endpoints described here are **relative to `base_path`**. For the default `base_path: "/"` you call them as written. With `base_path: "/config"` you prefix every route with `/config`.
 
-### 3.1 Endpoints
+### 3.1 URL shapes
 
-Supported JSON endpoints:
+For an environment `env`, application `app`, profile `profile`, and optional git label `label`:
 
-* `GET /{env}/{application}/{profile}`
-* `GET /{env}/{application}/{profile}/{label}`
+* Default label (uses `git.branch`):
 
-(plus an optional `base_path` prefix, see below.)
+  ```text
+  GET /{env}/{app}/{profile}
+  ```
 
-The response has the same shape as Spring Cloud Config’s `/env` endpoint:
+* Explicit label (branch / tag / commit-ish):
+
+  ```text
+  GET /{env}/{app}/{profile}/{label}
+  ```
+
+Example:
+
+```bash
+curl -u myuser:mypassword   "http://localhost:8899/dev/config-client/default"
+
+curl -u myuser:mypassword   "http://localhost:8899/dev/config-client/default/release"
+```
+
+### 3.2 YAML resolution & merge order
+
+For each request the server looks for YAML files under the environment’s `git.subpath` in this order:
+
+1. `<app>-<profile>.yml`
+2. `<app>-<profile>.yaml`
+3. `<app>.yml`
+4. `<app>.yaml`
+5. `application-<profile>.yml`
+6. `application-<profile>.yaml`
+7. `application.yml`
+8. `application.yaml`
+
+Each file is:
+
+1. loaded from Git (respecting `{label}` if given),
+2. treated as **text** and templated (see section 5),
+3. parsed as YAML,
+4. flattened into a map of dot‑separated keys (`foo.bar.baz`) → JSON values.
+
+For each physical YAML file found you get an entry in `propertySources`, in **the same order as above** (highest‑priority first), e.g.:
 
 ```json
 {
-  "name": "config-client",
+  "name": "app",
   "profiles": ["dev"],
-  "label": "main",
-  "version": "b4e0c15a536cc16b6b0c2a78c188bfaa3246704c",
+  "label": "release",
+  "version": "86b4bdfa0feaf6d376cab620318df1f00e528314",
   "state": "",
   "propertySources": [
     {
-      "name": "git:file:///path/to/repo/config-client-dev.yml",
+      "name": "file:///…/config-repo/dev/config-client-dev.yml",
       "source": {
-        "demo.message": "Hello from MAIN branch (dev profile)",
+        "demo.message": "Hello from RELEASE branch (dev profile)",
         "demo.number": 42
+      }
+    },
+    {
+      "name": "file:///…/config-repo/dev/application.yml",
+      "source": {
+        "logging.level.org.springframework.security.ldap": "TRACE",
+        "ui.config.env": "dev"
       }
     }
   ]
 }
 ```
 
-Notes:
+If **no file matches**, the server mimics Spring Cloud Config and returns HTTP `200` with an empty `propertySources` array and `label` set appropriately.
 
-* `env` is an arbitrary string chosen in `config.yaml` (e.g. `dev`, `test`, `ref`, `prod`, or `default` in single-instance mode).
-* `label` is:
-  * `null` when no label is provided.
-  * The string from the URL when provided (e.g. `release`).
-* `version` is the **commit hash** (`git rev-parse`) of the resolved ref.
-* `propertySources`:
-  * Contains a single flattened source if any config files were found.
-  * Is an **empty array** when no files are found – HTTP **200** with empty `propertySources` (like Spring), not 404.
+### 3.3 Data types
 
-### 3.2 Label → Git ref
+After templating, YAML is parsed using `serde_yaml_ng`, so basic types are preserved:
 
-The label is resolved as:
+* numbers stay numbers (`1`, `1.23`),
+* booleans stay booleans (`true`, `false`),
+* strings stay strings.
 
-* If label is present:
-  * try `<label>`
-  * then `origin/<label>`
-* If label is absent:
-  * use the configured default branch `git.branch`
-  * or `origin/<git.branch>`
-
-All file reads are done using:
-
-```bash
-git -C <workdir> show <ref>:<subpath>/<path>
-```
-
-so multiple environments and labels/branches can be requested concurrently.
-
-### 3.3 Search paths (`subpath`)
-
-Spring has `search-paths`. Here we use:
-
-```yaml
-git:
-  subpath: "test"
-```
-
-This acts as the **root within the repo** for that environment. All file lookups behave as if the repo root was `<repo>/<subpath>`.
-
-Example:
-
-* repo: `file:///…/example-configs`
-* `subpath: "test"`
-* config file in Git: `test/config-client-dev.yml`
-* request: `GET /test/config-client/dev`
-* server will read `config-client-dev.yml` from `ref:test/config-client-dev.yml`.
+Flattening uses an [`IndexMap`](https://docs.rs/indexmap/) under the hood, so keys in each `source` map keep their original YAML order.
 
 ---
 
-## 4. Extra endpoints for non-Spring clients
+## 4. Extra endpoints for non‑Spring clients (env + assets)
 
-In addition to Spring-style endpoints, each environment exposes:
+In addition to the Spring‑compatible endpoints, each environment exposes helpers for **env inspection** and **raw assets**.
 
-* **File endpoint** (with templating):
-  * `GET /{env}/file/{label}/{*path}`
+Again, all routes are prefixed by `base_path` if configured.
 
-* **Environment map**:
-  * `GET /{env}/env` – JSON map of all variables used for templating.
-  * `GET /{env}/env/export` – shell `export VAR="value"` lines.
+### 4.1 Env map endpoints
 
-* **File listing**:
-  * `GET /{env}/files` – JSON list of files under the environment’s `subpath`.
+For environment `{env}`:
 
-Again, all of the above are prefixed by `base_path` if configured.
+* Effective env as JSON:
 
-### 4.1 File endpoint semantics
+  ```text
+  GET /{env}/env
+  ```
 
-* Uses the same label → Git ref resolution as the Spring endpoints.
-* Combines `subpath` and `{*path}` and reads via `git show`.
+  Response:
 
-Content types:
+  ```json
+  {
+    "DB_URL": "jdbc:postgresql://localhost:5432/app-dev",
+    "DB_USER": "demo_user",
+    "DB_PASSWORD": "s3cr3t",
+    "ENV_NAME": "local-dev"
+  }
+  ```
 
-* If the file looks like **binary** (null byte or non-UTF-8) → returns `application/octet-stream` (or guessed MIME) as raw bytes.
-* If the file is **text**:
-  * Applies templating: `{{ VAR_NAME }}` → replaced with value from the effective env map of the addressed environment.
-  * Returns text with a guessed MIME type (based on extension) or `text/plain`.
+* Env as shell exports:
 
-Typical use cases:
+  ```text
+  GET /{env}/env/export
+  ```
 
-```bash
-# get env for an environment as JSON
-curl -s -u "$AUTH_USERNAME:$AUTH_PASSWORD"   "http://localhost:8899/dev/env" | jq
+  Response (plain text):
 
-# load env into shell
-eval "$(
-  curl -s -u "$AUTH_USERNAME:$AUTH_PASSWORD"     "http://localhost:8899/test/env/export"
-)"
+  ```bash
+  export DB_URL="jdbc:postgresql://localhost:5432/app-dev"
+  export DB_USER="demo_user"
+  export DB_PASSWORD="s3cr3t"
+  export ENV_NAME="local-dev"
+  ```
 
-# preview a templated YAML file for env 'ref'
-curl -s -u "$AUTH_USERNAME:$AUTH_PASSWORD"   "http://localhost:8899/ref/file/main/user-management.yml"
-```
+### 4.2 Asset endpoints
+
+* List all files (relative to `git.subpath`) from the default branch:
+
+  ```text
+  GET /{env}/assets
+  ```
+
+  Response:
+
+  ```json
+  {
+    "files": [
+      "application.yml",
+      "config-client.yml",
+      "user-management.yml"
+    ]
+  }
+  ```
+
+* Get a single asset from the **default** label:
+
+  ```text
+  GET /{env}/assets/{path}
+  ```
+
+  Example:
+
+  ```bash
+  curl -u myuser:mypassword     "http://localhost:8899/test/assets/application.yml"
+  ```
+
+* Get a single asset from an explicit label (branch / tag):
+
+  ```text
+  GET /{env}/assets/{label}/{path}
+  ```
+
+  Example:
+
+  ```bash
+  curl -u myuser:mypassword     "http://localhost:8899/test/assets/release/application.yml"
+  ```
+
+Semantics:
+
+* The server resolves `{label}` against the `branches` list (and the default `branch`).
+* Content type:
+  * if the file contains a `0x00` byte or is not valid UTF‑8 → it is treated as **binary** and returned as `application/octet-stream` (or a guessed MIME type).
+  * otherwise it is treated as **text**:
+    * templating is applied (section 5),
+    * MIME type is guessed by extension (`.yml`, `.yaml` → `text/yaml`; `.json` → `application/json`; default `text/plain`).
 
 ---
 
 ## 5. Templating
 
-Any **text** file is processed before sending:
+Any **text** file goes through a very small templating step:
 
-* Pattern: `{{ VAR_NAME }}` (double curly braces).
-* The server uses a pre-built `HashMap<String, String>` **per environment**.
-* Values are looked up by exact variable name.
+* Pattern: `{{ VAR_NAME }}` (double curly braces, no extra syntax).
+* Lookup: in the effective env map for the addressed environment.
+* Missing variables are simply replaced by an empty string.
 
-Example in Git:
+Example YAML in Git:
 
 ```yaml
+demo:
+  message: "Hello from {{ ENV_NAME }}!"
 spring:
   datasource:
-    url: "{{ DB_URL }}?currentSchema=um"
+    url: "{{ DB_URL }}?currentSchema=app"
     username: "{{ DB_USER }}"
     password: "{{ DB_PASSWORD }}"
+    hikari:
+      maximumPoolSize: {{ DB_MAX_POOL_SIZE }}
 ```
 
-If `config.yaml` contains:
-
-```yaml
-env_from_process: true
-env_file: "/app/config/common.env"
-
-environments:
-  test:
-    git: ...
-    env_file: "/app/config/test.env"
-```
-
-and you prepare:
+With env:
 
 ```bash
-# global env (used for all environments)
-export DB_USER=demo_user
-export DB_PASSWORD=s3cr3t
-
-# per-env .env file
-cat > /app/config/test.env <<'EOF'
-DB_URL=jdbc:postgresql://localhost:5432/app-test
-ENV_NAME=lokalni-test
-EOF
+DB_URL=jdbc:postgresql://localhost:5432/app-dev
+DB_USER=demo_user
+DB_PASSWORD=s3cr3t
+DB_MAX_POOL_SIZE=30
+ENV_NAME=local-dev
 ```
 
-Then requests against `/test/...` will see:
+The templated YAML becomes:
 
-* `DB_USER`, `DB_PASSWORD` from process/global env.
-* `DB_URL`, `ENV_NAME` from `/app/config/test.env`.
+```yaml
+demo:
+  message: "Hello from local-dev!"
+spring:
+  datasource:
+    url: "jdbc:postgresql://localhost:5432/app-dev?currentSchema=app"
+    username: "demo_user"
+    password: "s3cr3t"
+    hikari:
+      maximumPoolSize: 30
+```
 
-> The server **does not decrypt secrets itself**.
-> If you have encrypted files (e.g. `env.secured.json`), decrypt them before starting the server and/or render them into env files.
+After YAML parsing, `maximumPoolSize` will be a number, not a string.
+
+> The server does **not** do any decryption.
+> If you use encrypted env files (for example with `encjson-rs`), decrypt them before starting `simple-config-server` and/or render them into the `.env` files.
 
 ---
 
-## 6. HTTP / base path / authentication
+## 6. HTTP, base path & authentication
 
-### 6.1 HTTP
+### 6.1 HTTP & base path
 
 `http` section:
 
@@ -326,258 +379,259 @@ http:
 ```
 
 * `bind_addr` – address and port to bind, e.g. `0.0.0.0:8080`.
-* `base_path` – optional prefix path. If set to `/config`, all routes are available under that prefix:
+* `base_path` – optional prefix. If set to `/config`, all routes are available under that prefix:
 
-  * `/config/{env}/{application}/{profile}`
-  * `/config/{env}/{application}/{profile}/{label}`
-  * `/config/{env}/file/{label}/{*path}`
-  * `/config/{env}/env`
-  * `/config/{env}/env/export`
-  * `/config/{env}/files`
-  * `/config/ui`
+  * Spring:
+    * `/config/{env}/{application}/{profile}`
+    * `/config/{env}/{application}/{profile}/{label}`
+  * Env helpers:
+    * `/config/{env}/env`
+    * `/config/{env}/env/export`
+  * Asset helpers:
+    * `/config/{env}/assets`
+    * `/config/{env}/assets/{path}`
+    * `/config/{env}/assets/{label}/{path}`
+  * Health:
+    * `/config/healthz`
+    * `/config/healthz/env`
+    * `/config/healthz/env/{env}`
+  * UI:
+    * `/config/ui`
+
+If `base_path` is `/`, routes are exposed exactly as `/dev/env`, `/dev/assets`, `/dev/app/default`, etc.
 
 ### 6.2 Authentication
 
-HTTP Basic Auth is optional and controlled purely by environment variables.
+There are two ways to protect the server:
 
-* If both are set:
+1. **HTTP Basic Auth** via environment variables.
+2. **Header‑based client auth** via `X-Client-Id` (or a custom header) configured in `config.yaml`.
 
-  ```bash
-  export AUTH_USERNAME="myuser"
-  export AUTH_PASSWORD="mypassword"
-  ```
+You can turn on either, both, or neither.
 
-  then Basic Auth is **required** for all endpoints (including `/ui`).
+#### 6.2.1 Basic Auth (env vars)
 
-* If one or both are missing:
+If you set:
 
-  * Basic Auth is **disabled** (anyone can access the server).
+```bash
+export AUTH_USERNAME="myuser"
+export AUTH_PASSWORD="mypassword"
+```
 
-These env vars are **not** stored anywhere; they are only used in memory.
+then:
+
+* Basic Auth is **required** for all endpoints (including `/ui`).
+* A valid `Authorization: Basic ...` header **always** grants access, regardless of `X-Client-Id`.
+* If credentials are wrong or missing, you get `401` with a `WWW-Authenticate` header.
+
+If one or both env vars are missing:
+
+* Basic Auth is **disabled**.
+
+Credentials are not persisted anywhere; they live only in memory.
+
+#### 6.2.2 X‑Client‑Id auth (per‑client ACL)
+
+Header‑based auth is configured under `auth.client_id` in `config.yaml`:
+
+```yaml
+auth:
+  client_id:
+    enabled: true
+    header_name: "x-client-id"
+    clients:
+      - id: "ci"
+        description: "CI pipeline"
+        environments: ["dev", "test"]        # or ["*"] for all envs
+        scopes: ["config:read", "files:read"]
+        ui_access: false
+      - id: "ops-dashboard"
+        environments: ["*"]
+        scopes: ["config:read", "files:read", "env:read"]
+        ui_access: true
+```
+
+Semantics:
+
+* If `enabled: false` or no clients are defined:
+  * X‑Client‑Id auth is effectively turned off.
+* If `enabled: true`:
+  * The server looks for the header named `header_name` (default `"x-client-id"`).
+  * If the header value matches a configured client:
+    * `environments` controls which environments the client may access:
+      * `["*"]` → any environment.
+      * otherwise → only listed environment names.
+    * `scopes` control what the client can do:
+      * `config:read` – Spring‑style endpoints (`/{env}/{app}/{profile}…`).
+      * `files:read` – asset endpoints (`/{env}/assets…`).
+      * `env:read` – env endpoints (`/{env}/env`, `/env/export`).
+    * `ui_access: true` additionally allows access to `/ui`.
+  * If the header is missing or the client is not known, the request is rejected (unless Basic Auth already succeeded or all auth is disabled).
+
+#### 6.2.3 Auth precedence & defaults
+
+The authorization logic is:
+
+1. If **neither** Basic Auth nor X‑Client‑Id are configured → **open access** (backwards compatible).
+2. If Basic Auth is configured and the request has **valid** Basic credentials → **allow**, ignore X‑Client‑Id.
+3. Otherwise, if X‑Client‑Id auth is enabled and the header matches a configured client → check **environment** and **scopes**.
+4. Otherwise → **401 Unauthorized**.
+
+Health endpoints (`/healthz`, `/healthz/env`, `/healthz/env/{env}`) are intentionally **not** protected and always return basic status information.
 
 ---
 
 ## 7. HTML UI (`/ui`)
 
-A dark-themed UI is available at:
+A dark‑themed UI (Fomantic‑UI) is available at:
 
-* `GET /ui` (or `${base_path}/ui` if you use a prefix)
+* `GET /ui` (or `${base_path}/ui` if you use a prefix).
 
-Features:
+It shows:
 
-* List of configured **environments** (`dev`, `test`, `ref`, `prod`, …).
-* For the selected environment:
-  * **Repo URL**
-  * **Branch**
-  * **Subpath**
-  * **Workdir**
-  * **Last commit hash**
-  * **Commit date**
-* Preview of:
-  * Effective env map as **JSON** (for that environment).
-  * Effective env map as **shell exports**.
-  * List of files in the Git repo (under `subpath`), with:
-    * On-click **templated preview** of the file.
-* Copy-to-clipboard icons for:
-  * Env JSON.
-  * Env exports.
-  * Templated file preview.
+* a list of configured environments (`dev`, `test`, `ref`, `prod`, …),
+* for the selected environment:
+  * Repo URL
+  * Default branch
+  * Subpath
+  * Workdir
+  * Last commit hash
+  * Commit date
+* effective env map:
+  * as JSON,
+  * as shell exports.
+* a tree of **assets** (files) under the Git subpath:
+  * click a file to see the **templated** content,
+  * or trigger a **Spring config JSON preview** (simulates `/env/app/default` and shows the merged JSON).
+
+All main text areas (env JSON, shell exports, templated preview, Spring JSON preview) have “copy to clipboard” icons.
 
 Authentication:
 
-* Protected by the same Basic Auth mechanism:
-  * username: `AUTH_USERNAME`
-  * password: `AUTH_PASSWORD`
-
-The UI is static HTML + Fomantic UI, with values injected at runtime via a JSON metadata blob.
-
----
-
-## 8. Logging
-
-Logging is implemented with [`tracing`](https://crates.io/crates/tracing) and `tracing-subscriber`:
-
-* Default level is `info`.
-* You can control it with `RUST_LOG`, for example:
-
-```bash
-RUST_LOG=info ./simple-config-server --config=config.yaml
-RUST_LOG=debug ./simple-config-server --config=config.yaml
-RUST_LOG=secure_config_server=debug,info ./simple-config-server --config=config.yaml
-```
-
-Git operations are logged at `info` (start) and `warn`/`error` on failure. Handlers log at `warn`/`error` for invalid requests and internal errors.
+* If Basic Auth is configured, `/ui` always requires valid Basic credentials.
+* Otherwise, if X‑Client‑Id auth is enabled:
+  * only clients with `ui_access: true` may access `/ui`.
+* If no auth is configured at all → `/ui` is open.
 
 ---
 
-## 9. Running locally
+## 8. Health endpoints
 
-Prerequisites:
+Health endpoints are useful for Kubernetes liveness/readiness probes and basic monitoring.
 
-* A recent stable Rust toolchain (`cargo`).
-* `git` installed and available on `PATH`.
+* Basic process health:
 
-### 9.1 Prepare a local Git repo
+  ```text
+  GET /healthz
+  ```
 
-```bash
-mkdir -p ~/dev/config-server-proxy.config.repo
-cd ~/dev/config-server-proxy.config.repo
-git init
-git checkout -b main
+  Response:
 
-cat > config-client-dev.yml <<'EOF'
-demo:
-  message: "DEV ENV – Hello from MAIN branch (dev profile) {{FOO}}->{{BAR}}"
-  number: 42
-EOF
+  ```json
+  {
+    "status": "UP",
+    "startup_time": "2025-12-13T10:00:00Z"
+  }
+  ```
 
-git add config-client-dev.yml
-git commit -m "Initial config"
-```
+* Summary for all environments:
 
-Optional: create a second branch:
+  ```text
+  GET /healthz/env
+  ```
 
-```bash
-git checkout -b release
-cat > config-client-dev.yml <<'EOF'
-demo:
-  message: "DEV ENV – Hello from RELEASE branch (dev profile)"
-EOF
-git commit -am "Release config"
-git checkout main
-```
+  Response:
 
-### 9.2 Single-instance example
+  ```json
+  {
+    "status": "UP",
+    "startup_time": "2025-12-13T10:00:00Z",
+    "environments": [
+      {
+        "env": "dev",
+        "env_var_count": 42,
+        "file_count": 18
+      },
+      {
+        "env": "test",
+        "env_var_count": 40,
+        "file_count": 19
+      }
+    ]
+  }
+  ```
 
-`config.yaml`:
+* Detail for a single environment:
 
-```yaml
-http:
-  bind_addr: "127.0.0.1:8899"
-  base_path: "/"
+  ```text
+  GET /healthz/env/{env}
+  ```
 
-env_from_process: true
+  Response:
 
-git:
-  repo_url: "file:///Users/you/dev/config-server-proxy.config.repo"
-  branch: "main"
-  workdir: "/Users/you/dev/config-server-proxy.config.wrk"
-  refresh_interval_secs: 30
-```
+  ```json
+  {
+    "status": "UP",
+    "startup_time": "2025-12-13T10:00:00Z",
+    "env": "dev",
+    "env_var_count": 42,
+    "file_count": 18
+  }
+  ```
 
-Run:
+All of the above are also available under `${base_path}` if configured (e.g. `/config/healthz`).
 
-```bash
-export AUTH_USERNAME=myuser
-export AUTH_PASSWORD=mypass
-export FOO=foo
-export BAR=bar
+---
 
-cargo run -- --config=config.yaml
-```
+## 9. Example Git layout
 
-Test:
-
-```bash
-# env name is "default"
-curl -s -u myuser:mypass   http://127.0.0.1:8899/default/config-client/dev | jq
-```
-
-### 9.3 Multi-tenant example
-
-`config.yaml`:
-
-```yaml
-http:
-  bind_addr: "127.0.0.1:8899"
-  base_path: "/"
-
-env_from_process: true
-env_file: "/app/config/common.env"
-
-environments:
-  dev:
-    git:
-      repo_url: "file:///Users/you/dev/config-server-proxy.config.repo"
-      branch: "main"
-      workdir: "/Users/you/dev/config-server-proxy.config.wrk/dev"
-      subpath: "dev"
-      refresh_interval_secs: 30
-    env_file: "/app/config/dev.env"
-
-  test:
-    git:
-      repo_url: "file:///Users/you/dev/config-server-proxy.config.repo"
-      branch: "main"
-      workdir: "/Users/you/dev/config-server-proxy.config.wrk/test"
-      subpath: "test"
-      refresh_interval_secs: 30
-    env_file: "/app/config/test.env"
-```
-
-Run:
-
-```bash
-export AUTH_USERNAME=myuser
-export AUTH_PASSWORD=mypass
-
-cargo run -- --config=config.yaml
-```
-
-Test:
-
-```bash
-# Spring-like endpoint for env "dev"
-curl -s -u myuser:mypass   http://127.0.0.1:8899/dev/config-client/dev | jq
-
-# env exports for "test"
-curl -s -u myuser:mypass   http://127.0.0.1:8899/test/env/export
-
-# templated YAML preview for env "dev"
-curl -s -u myuser:mypass   http://127.0.0.1:8899/dev/file/main/config-client-dev.yml
-```
-
-### 9.4 UI
-
-Open in browser:
+A typical mono‑repo layout for multi‑tenant usage:
 
 ```text
-http://127.0.0.1:8899/ui
+<git_repo_root>/
+  dev/
+    application.yml
+    config-client.yml
+    user-management.yml
+  test/
+    application.yml
+    config-client.yml
+    user-management.yml
+  ref/
+    application.yml
+    config-client.yml
+    user-management.yml
+  prod/
+    application.yml
+    config-client.yml
+    user-management.yml
 ```
 
-(or with your base path prefix)
+Each environment in `config.yaml` would then point `git.subpath` to the corresponding subdirectory (`"dev"`, `"test"`, …).
 
 ---
 
-## 10. Using with Spring Boot Config Client
+## 10. Spring Boot integration
 
-You can point a Spring Boot app to this server similarly to a standard Spring Cloud Config Server, but now with an explicit environment segment.
+The Spring side is standard **Config Client**:
 
-Example for environment `dev`:
+1. Add Spring Cloud Config Client to your Spring Boot app.
+2. Point it at `simple-config-server` using `spring.config.import`.
 
-```yaml
-spring:
-  application:
-    name: config-client
-
-  profiles:
-    active: dev
-
-  config:
-    import: "optional:configserver:http://myuser:mypass@localhost:8899/dev"
-```
-
-Or via command line:
+Example:
 
 ```bash
 java -jar configclient.jar   --spring.profiles.active=dev   --spring.config.import="optional:configserver:http://myuser:mypass@localhost:8899/dev"
 ```
 
-Notes:
-
-* Spring will first try the `default` profile; the server responds with 200 + empty `propertySources`, which is acceptable even without any `config-client.yml` in the repo.
-* Then Spring loads `profiles='dev'` and merges `config-client-dev.yml`, `application.yml` etc., just like with the original Config Server.
-* The `/dev` (or `/test`, `/prod`, …) prefix selects which environment’s Git repo / env map to use.
+* The `/dev` segment selects the environment.
+* Spring will first request `/dev/<app>/default`, then `/dev/<app>/dev`, etc.
+* `simple-config-server` responds with the same JSON structure as the official Spring Cloud Config Server, including:
+  * `name`
+  * `profiles`
+  * `label`
+  * `version` (Git commit hash)
+  * `propertySources` (list of file‑backed maps).
 
 ---
 
