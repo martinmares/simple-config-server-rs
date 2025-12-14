@@ -29,6 +29,25 @@
   #selected-env-table td:nth-child(2) {
     white-space: nowrap;
   }
+
+  /* Make text selection visible in dark inputs (some themes make it too subtle) */
+  ::selection {
+    background: rgba(var(--tblr-primary-rgb, var(--bs-primary-rgb)), .35);
+    color: var(--bs-body-color);
+  }
+  ::-moz-selection {
+    background: rgba(var(--tblr-primary-rgb, var(--bs-primary-rgb)), .35);
+    color: var(--bs-body-color);
+  }
+  input::selection, textarea::selection, .form-control::selection {
+    background: rgba(var(--tblr-primary-rgb, var(--bs-primary-rgb)), .45);
+    color: var(--bs-body-color);
+  }
+  input::-moz-selection, textarea::-moz-selection, .form-control::-moz-selection {
+    background: rgba(var(--tblr-primary-rgb, var(--bs-primary-rgb)), .45);
+    color: var(--bs-body-color);
+  }
+
 </style>
 </head>
 <body>
