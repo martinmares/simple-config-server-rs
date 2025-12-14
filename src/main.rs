@@ -1050,9 +1050,7 @@ fn is_authorized_for(
     }
 
     // 2) X-Client-Id
-    if client_enabled
-        && let Some(client) = client_auth.get_client(headers)
-    {
+    if client_enabled && let Some(client) = client_auth.get_client(headers) {
         if !client_has_env(client, env) {
             return false;
         }
@@ -1248,27 +1246,29 @@ async fn env_file_handler(
 
     let env_state = match state.envs.get(&env) {
         Some(e) => e,
-        None => {
-            // For non-existing environment, return plain 404 (REST-ish).
-            return (StatusCode::NOT_FOUND, "Environment not found").into_response();
+        None => return (StatusCode::NOT_FOUND, "Environment not found").into_response(),
+    };
+
+    // Normalize (just in case)
+    let rel_path = rel_path.trim_start_matches('/').to_string();
+    if rel_path.is_empty() {
+        return (StatusCode::NOT_FOUND, "File not found").into_response();
+    }
+
+    let res = if let Some((first, rest)) = rel_path.split_once('/') {
+        // Ambiguous case:
+        // - could be "{label}/{path...}"
+        // - or could be nested path in default branch ("src/Makefile")
+        //
+        // Try label first; if it doesn't exist -> fallback to default branch with full rel_path.
+        match handle_file_request(env_state, Some(first), rest).await {
+            Ok(resp) => Ok(resp),
+            Err(ServerError::NotFound) => handle_file_request(env_state, None, &rel_path).await,
+            Err(e) => Err(e),
         }
-    };
-
-    // rel_path may be either:
-    //   "{path}"                -> default branch
-    //   "{label}/{path...}"     -> explicit git label
-    let mut parts = rel_path.splitn(2, '/');
-    let first = match parts.next() {
-        Some(f) if !f.is_empty() => f,
-        _ => return (StatusCode::NOT_FOUND, "File not found").into_response(),
-    };
-
-    let res = if let Some(rest) = parts.next() {
-        // label + path
-        handle_file_request(env_state, Some(first), rest).await
     } else {
-        // only path, use default branch
-        handle_file_request(env_state, None, first).await
+        // Single segment path -> default branch
+        handle_file_request(env_state, None, &rel_path).await
     };
 
     match res {
