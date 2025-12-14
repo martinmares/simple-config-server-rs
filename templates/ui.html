@@ -1,574 +1,253 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>Simple Config Server UI</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/>
+<title>Simple Config Server UI</title>
+<!-- Tabler (Bootstrap 5 based) -->
+<link href="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/css/tabler.min.css" rel="stylesheet"/>
+<link href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/dist/tabler-icons.min.css" rel="stylesheet"/>
+<style>
 
-  <link
-    rel="stylesheet"
-    href="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.3/dist/semantic.min.css"
-  />
-  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.3/dist/semantic.min.js"></script>
+  /* Minimal layout tweaks */
+  .sticky-sidebar {
+    position: sticky;
+    top: 1rem;
+    z-index: 1020;
+    max-height: calc(100vh - 2rem);
+    overflow: auto;
+  }
 
-  <style>
-    html, body { height: 100%; }
-    body{
-      margin:0;
-      background:#0f1115;
-      color:rgba(255,255,255,0.92);
-      font-family: "Lato","Helvetica Neue",Arial,Helvetica,sans-serif;
-    }
+  #env-select { width: 100%; }
 
-    .app-shell{
-      min-height:100%;
-      display:flex;
-      flex-direction:column;
-    }
+  #selected-env-table td {
+    padding-top: .75rem;
+    padding-bottom: .75rem;
+    vertical-align: top;
+  }
 
-    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-    .muted{ color: rgba(255,255,255,0.65); }
-
-    /* HERO HEADER (aligned with simple-secrets-server) */
-    .hero-wrap{ padding:14px 14px 0 14px; }
-    .hero{
-      border-radius:12px;
-      padding:18px 18px;
-      background: linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03));
-      border:1px solid rgba(255,255,255,0.08);
-      box-shadow:0 10px 30px rgba(0,0,0,0.35);
-    }
-    .hero-inner{
-      display:flex;
-      align-items:flex-start;
-      justify-content:space-between;
-      gap:18px;}
-    .hero-title{
-      display:flex;
-      align-items:center;
-      gap:12px;
-      margin:0;
-      font-size:28px;
-      font-weight:780;
-      letter-spacing:0.2px;
-    }
-    .hero-title i.icon{ font-size: 22px; }
-    .hero-subtitle{
-      margin-top:8px;
-      color: rgba(255,255,255,0.72);
-      max-width: 1040px;
-      line-height: 1.35;
-    }
-
-    .hero-right {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 8px;
-  min-width: 360px;
-}
-.stat-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.10);
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.86);
-  font-size: 12px;
-  white-space: nowrap;
-}
-.pill strong { font-weight: 750; color: rgba(255,255,255,0.92); }
-
-.pill .ui.button {
-  margin: 0 !important;
-  border-radius: 999px !important;
-}
-
-@media (max-width: 900px) {
-  .hero-inner { flex-wrap: wrap; }
-  .hero-right { align-items: flex-start; min-width: unset; }
-  .stat-row { justify-content: flex-start; }
-}/* CONTENT */
-    .content{
-      padding:10px 14px 14px 14px;
-      flex:1;
-    }
-
-    /* reduce default Semantic UI grid margins (match tighter layout) */
-    #main-content.ui.grid{ margin: 0 !important; }
-    #main-content.ui.grid > .column{ padding-top: 0.7rem; padding-bottom: 0.7rem; }
-
-    code{
-      background: rgba(255,255,255,0.06);
-      border: 1px solid rgba(255,255,255,0.10);
-      border-radius: 8px;
-      padding: 0.12em 0.35em;
-      color: rgba(255,255,255,0.92);
-    }
-
-    /* Cards / segments (match simple-* look) */
-    .ui.inverted.segment{
-      background: rgba(255,255,255,0.02) !important;
-      border: 1px solid rgba(255,255,255,0.08) !important;
-      border-radius: 12px !important;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.20);
-    }
-
-    /* keep the left column (Environments) visible when scrolling */
-    #left-column{
-      position: sticky;
-      top: 10px;
-      align-self: flex-start;
-    }
-
-    /* headings inside segments */
-    .ui.inverted.segment .ui.header,
-    .ui.inverted.segment h2,
-    .ui.inverted.segment h3,
-    .ui.inverted.segment h4{
-      color: rgba(255,255,255,0.92) !important;
-    }
-
-    /* pre blocks (JSON / exports / preview) */
-    pre{
-      background: rgba(255,255,255,0.03);
-      color: rgba(255,255,255,0.92);
-      padding: 10px 12px;
-      border-radius: 12px;
-      overflow-x: auto;
-      font-size: 0.9rem;
-      border: 1px solid rgba(255,255,255,0.10);
-      font-family: ui-monospace, Menlo, Monaco, "SF Mono", "Fira Code", monospace;
-    }
-
-    /* limit height of scrollable content areas */
-    #env-json, #env-export, #file-preview, #spring-preview{
-      max-height: 33vh;
-      overflow-y: auto;
-    }
-
-    /* Environment menu tweaks */
-    .env-menu{
-      background: transparent !important;
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 10px;
-      overflow: hidden;
-    }
-    .env-menu .item{
-      color: rgba(255,255,255,0.86) !important;
-    }
-    .env-menu .item:hover{
-      background: rgba(255,255,255,0.04) !important;
-    }
-    .env-menu .item.active{
-      background-color: rgba(33,133,208,0.22) !important; /* Fomantic primary blue */
-      color: rgba(255,255,255,0.95) !important;
-    }
-
-    /* files list */
-    #files-list{
-      list-style-type:none;
-      padding-left:0;
-      margin-left:0;
-      color: rgba(255,255,255,0.92);
-    }
-    #files-list li{
-      display:flex;
-      align-items:center;
-      margin-bottom:0.3rem;
-      color: rgba(255,255,255,0.90) !important;
-    }
-    #files-list li i.file-icon{
-      margin-right:0.5rem;
-      color: rgba(255,255,255,0.88);
-      opacity:0.85;
-    }
-    #files-list li i.file-icon:hover{ opacity:1; }
-
-    a.file-link{ color: #2dafe1; cursor:pointer; }
-    a.file-link:hover{ text-decoration: underline; }
-
-    .files-container{ max-height:33vh; overflow-y:auto; }
-
-    /* ikonová buňka v tabulce Selected environment */
-    #selected-env-table td.icon-cell{ width:2.5rem; text-align:center; white-space:nowrap; }
-    #selected-env-table td.icon-cell i{ color: rgba(255,255,255,0.88); opacity:0.85; }
-    #selected-env-table td.icon-cell i:hover{ opacity:1; }
-    #selected-env-table td.value-cell{
-      word-break: break-all;
-      overflow-wrap: anywhere;
-      white-space: normal;
-    }
-
-    /* header inside segment + copy icon */
-    .segment-header{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      margin-bottom:0.5rem;
-      gap: 10px;
-    }
-    .copy-button{ color: rgba(255,255,255,0.88); opacity:0.7; cursor:pointer; }
-    .copy-button:hover{ opacity:1; }
-
-    /* Dark controls (inputs, dropdowns, checkboxes) – copied/adapted from simple-secrets-server */
-    :root{
-      --ctl-bg: rgba(255,255,255,0.06);
-      --ctl-bg-hover: rgba(255,255,255,0.09);
-      --ctl-bg-focus: rgba(255,255,255,0.08);
-      --ctl-border: rgba(255,255,255,0.14);
-      --ctl-border-focus: rgba(255,255,255,0.22);
-      --ctl-text: rgba(255,255,255,0.90);
-      --ctl-muted: rgba(255,255,255,0.55);
-    }
-
-    .ui.input>input,
-    .ui.input input,
-    .ui.form input[type="text"],
-    .ui.form input[type="search"],
-    .ui.form input[type="password"],
-    .ui.form input[type="email"],
-    .ui.form input[type="url"],
-    .ui.form textarea,
-    input.mono{
-      background: var(--ctl-bg) !important;
-      color: var(--ctl-text) !important;
-      border: 1px solid var(--ctl-border) !important;
-      box-shadow: none !important;
-      border-radius: 10px !important;
-    }
-
-    .ui.input>input::placeholder,
-    .ui.input input::placeholder,
-    .ui.form input::placeholder,
-    .ui.form textarea::placeholder{
-      color: var(--ctl-muted) !important;
-    }
-
-    .ui.input>input:focus,
-    .ui.input input:focus,
-    .ui.form input:focus,
-    .ui.form textarea:focus,
-    input.mono:focus{
-      background: var(--ctl-bg-focus) !important;
-      border-color: var(--ctl-border-focus) !important;
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.06) inset !important;
-    }
-
-    .ui.form .field>label{
-      color: rgba(255,255,255,0.78) !important;
-    }
-
-    /* Dropdowns (if present later) */
-    .ui.selection.dropdown,
-    .ui.selection.dropdown .menu,
-    .ui.dropdown .menu{
-      background: rgba(20,22,26,0.98) !important;
-      border-color: var(--ctl-border) !important;
-      color: var(--ctl-text) !important;
-    }
-    .ui.selection.dropdown{ background: var(--ctl-bg) !important; }
-    .ui.selection.dropdown .text,
-    .ui.selection.dropdown .dropdown.icon{
-      color: var(--ctl-text) !important;
-    }
-    .ui.dropdown .menu > .item{
-      color: rgba(255,255,255,0.84) !important;
-    }
-    .ui.dropdown .menu > .item:hover,
-    .ui.dropdown .menu > .item.active,
-    .ui.dropdown .menu > .item.selected{
-      background: rgba(255,255,255,0.08) !important;
-      color: rgba(255,255,255,0.95) !important;
-    }
-
-    /* Dark checkbox (Fomantic/Semantic) */
-    .ui.checkbox label:before{
-      background: var(--ctl-bg) !important;
-      border: 1px solid var(--ctl-border) !important;
-      box-shadow: none !important;
-    }
-    .ui.checkbox input:focus ~ label:before{
-      border-color: var(--ctl-border-focus) !important;
-    }
-    .ui.checkbox input:checked ~ label:before{
-      background: rgba(255,255,255,0.10) !important;
-      border-color: var(--ctl-border-focus) !important;
-    }
-    .ui.checkbox input:checked ~ label:after{
-      color: rgba(255,255,255,0.92) !important;
-      text-shadow: none !important;
-    }
-
-    /* visible scrollbars on dark background */
-    pre, .files-container{
-      scrollbar-color: #555 rgba(20,22,26,0.98);
-      scrollbar-width: thin;
-    }
-    pre::-webkit-scrollbar, .files-container::-webkit-scrollbar{
-      width: 8px;
-      height: 8px;
-    }
-    pre::-webkit-scrollbar-track, .files-container::-webkit-scrollbar-track{
-      background: rgba(20,22,26,0.98);
-    }
-    pre::-webkit-scrollbar-thumb, .files-container::-webkit-scrollbar-thumb{
-      background-color: #555;
-      border-radius: 4px;
-    }
-    pre::-webkit-scrollbar-thumb:hover, .files-container::-webkit-scrollbar-thumb:hover{
-      background-color: #777;
-    }
-  </style>
+  #selected-env-table td:nth-child(2) {
+    white-space: nowrap;
+  }
+</style>
 </head>
-<body class="ui inverted">
-  <div class="app-shell" id="root">
-  <!-- HERO HEADER -->
-    <div class="hero-wrap">
-  <div class="hero">
-    <div class="hero-inner">
-      <div>
-        <div class="hero-title">
-          <i class="settings icon"></i>
-          Simple Config Server
-        </div>
-        <div class="hero-subtitle">
-          Multi-environment configuration server compatible with Spring Cloud Config,
-          with template expansion over environment variables and Git-backed assets.
-        </div>
-      </div>
-
-      <div class="hero-right">
-        <div class="stat-row">
-          <div class="pill" title="Number of configured environments">
-            envs: <strong id="hero-env-count">-</strong>
-          </div>
-          <div class="pill" title="Authentication mode">
-            auth: <strong id="hero-auth-mode">-</strong>
-          </div>
-        </div>
-
-        <div class="stat-row">
-          <div class="pill" title="Current environment repo head SHA">
-            base_sha:
-            <strong class="mono" id="hero-base-sha-short">-</strong>
-            <button class="ui tiny icon button" id="btnCopyHeroSha" title="Copy full sha">
-              <i class="copy icon"></i>
-            </button>
-          </div>
-          <div class="pill" title="Last reload time (client)">
-            reloaded: <strong class="mono" id="hero-reloaded-at">-</strong>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+<body>
+<div class="page" id="root">
+<!-- HERO -->
+<div class="container-xl mt-3">
+<div class="card">
+<div class="card-body">
+<div class="d-flex align-items-start justify-content-between gap-3 flex-wrap">
+<div>
+<h2 class="mb-1">
+<i class="ti ti-settings me-2"></i>
+                Simple Config Server
+              </h2>
+<div class="text-muted">
+                Multi-environment configuration server compatible with Spring Cloud Config,
+                with template expansion over environment variables and Git-backed assets.
+              </div>
 </div>
+<div class="d-flex align-items-center gap-2 flex-wrap justify-content-end">
+<span class="badge bg-azure-lt">envs: <span id="hero-env-count">0</span></span>
+<span class="badge bg-indigo-lt">auth: <span id="hero-auth-mode">?</span></span>
+<span class="badge bg-secondary-lt">
+                base_sha: <span class="font-monospace" id="hero-base-sha-short">-</span>
+</span>
+<button class="btn btn-sm btn-icon" id="btnCopyHeroSha" title="Copy full base_sha" type="button">
+<i class="ti ti-copy"></i>
+</button>
+<span class="badge bg-secondary-lt">
+                reloaded: <span class="font-monospace" id="hero-reloaded-at">-</span>
+</span>
+<label class="form-check form-switch m-0 ms-2">
+<input class="form-check-input" id="theme-toggle" type="checkbox"/>
+<span class="form-check-label">Theme</span>
+</label>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- MAIN -->
+<div class="page-wrapper">
+<div class="page-body pt-0 mt-0">
+<div class="container-xl mt-3">
+<div class="row g-3" id="main-content">
+<!-- LEFT -->
+<div class="col-12 col-xl-3" id="left-column">
+<div class="d-flex flex-column gap-3 sticky-sidebar">
+<div class="card">
+<div class="card-header">
+<h3 class="card-title">Environment</h3>
+</div>
+<div class="card-body">
+<select aria-label="Select environment" class="form-select form-select-lg" id="env-select">
+<option selected="" value="">Loading…</option>
+</select>
+</div>
+</div>
+<div class="card">
+<div class="card-header">
+<h3 class="card-title">Selected environment</h3>
+</div>
+<div class="card-body">
+<div class="table-responsive">
+<table class="table table-sm mb-0" id="selected-env-table">
+<tbody>
+<tr>
+<td class="text-muted w-1"><i class="ti ti-id"></i></td>
+<td class="text-muted">Name</td>
+<td class="font-monospace" id="env-name">-</td>
+</tr>
+<tr>
+<td class="text-muted w-1"><i class="ti ti-link"></i></td>
+<td class="text-muted">Repo</td>
+<td class="font-monospace" id="env-repo">-</td>
+</tr>
+<tr>
+<td class="text-muted w-1"><i class="ti ti-git-branch"></i></td>
+<td class="text-muted">Branch</td>
+<td class="font-monospace" id="env-branch">-</td>
+</tr>
+<tr>
+<td class="text-muted w-1"><i class="ti ti-folder"></i></td>
+<td class="text-muted">Subpath</td>
+<td class="font-monospace" id="env-subpath">-</td>
+</tr>
+<tr>
+<td class="text-muted w-1"><i class="ti ti-terminal-2"></i></td>
+<td class="text-muted">Workdir</td>
+<td class="font-monospace" id="env-workdir">-</td>
+</tr>
+<tr>
+<td class="text-muted w-1"><i class="ti ti-git-commit"></i></td>
+<td class="text-muted">Commit</td>
+<td class="font-monospace" id="env-last-commit">-</td>
+</tr>
+<tr>
+<td class="text-muted w-1"><i class="ti ti-calendar-time"></i></td>
+<td class="text-muted">Commit date</td>
+<td class="font-monospace" id="env-last-commit-date">-</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- RIGHT -->
+<div class="col-12 col-xl-9" id="right-column">
+<div class="row g-3">
+<div class="col-12">
+<div class="card">
+<div class="card-header">
+<h3 class="card-title">Environment variables (JSON)</h3>
+<div class="card-actions">
+<button class="btn btn-sm btn-icon" onclick="copyPre('env-json')" title="Copy JSON" type="button">
+<i class="ti ti-copy"></i>
+</button>
+</div>
+</div>
+<div class="card-body">
+<pre class="m-0 p-3 border rounded bg-body-tertiary font-monospace overflow-auto text-body" id="env-json" style="max-height: 260px;">Select environment…</pre>
+</div>
+</div>
+</div>
+<div class="col-12">
+<div class="card">
+<div class="card-header">
+<h3 class="card-title">Environment variables as shell exports</h3>
+<div class="card-actions">
+<button class="btn btn-sm btn-icon" onclick="copyPre('env-export')" title="Copy exports" type="button">
+<i class="ti ti-copy"></i>
+</button>
+</div>
+</div>
+<div class="card-body">
+<pre class="m-0 p-3 border rounded bg-body-tertiary font-monospace overflow-auto text-body" id="env-export" style="max-height: 240px;">Select environment…</pre>
+</div>
+</div>
+</div>
+<div class="col-12">
+<div class="card">
+<div class="card-header">
+<h3 class="card-title">Spring config JSON preview</h3>
+<div class="card-actions">
+<button class="btn btn-sm btn-icon" onclick="copyPre('spring-preview')" title="Copy Spring JSON" type="button">
+<i class="ti ti-copy"></i>
+</button>
+</div>
+</div>
+<div class="card-body">
+<div class="text-muted mb-3">
+                        Simulates a Spring Cloud Config client call for the currently selected environment.
+                        Fill in <code>application</code>, <code>profile</code> and optional <code>label</code>.
+                      </div>
+<form id="spring-form">
+<div class="row g-2">
+<div class="col-12 col-md-4">
+<label class="form-label">Application</label>
+<input class="form-control font-monospace" id="spring-app" placeholder="tsm-deco" type="text" value="tsm-deco"/>
+</div>
+<div class="col-12 col-md-4">
+<label class="form-label">Profile</label>
+<input class="form-control font-monospace" id="spring-profile" placeholder="default" type="text" value="default"/>
+</div>
+<div class="col-12 col-md-4">
+<label class="form-label">Label (optional)</label>
+<input class="form-control font-monospace" id="spring-label" placeholder="main / release / empty" type="text"/>
+</div>
+</div>
+<div class="mt-3 d-flex align-items-center gap-2 flex-wrap">
+<button class="btn btn-primary" type="submit">Load preview</button>
+<span class="text-muted small font-monospace" id="spring-request-path"></span>
+</div>
+</form>
+<div class="mt-3">
+<pre class="m-0 p-3 border rounded bg-body-tertiary font-monospace overflow-auto text-body" id="spring-preview" style="max-height: 260px;">Select environment and load preview…</pre>
+</div>
+</div>
+</div>
+</div>
+<div class="col-12">
+<div class="card">
+<div class="card-header">
+<h3 class="card-title">Files &amp; templated preview (git repo)</h3>
+<div class="card-actions">
+<button class="btn btn-sm btn-icon" onclick="copyPre('file-preview')" title="Copy preview" type="button">
+<i class="ti ti-copy"></i>
+</button>
+</div>
+</div>
+<div class="card-body">
+<div class="row g-3">
+<div class="col-12 col-md-4">
+<div class="text-muted mb-2">Files</div>
+<ul class="list-group list-group-flush border rounded overflow-auto" id="files-list" style="max-height: 320px;">
+<li class="list-group-item text-muted">No environment selected.</li>
+</ul>
+</div>
+<div class="col-12 col-md-8">
+<div class="text-muted mb-2">Preview (templated text)</div>
+<pre class="m-0 p-3 border rounded bg-body-tertiary font-monospace overflow-auto text-body" id="file-preview" style="max-height: 320px;">Select a file to preview…</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- Tabler JS (optional, but harmless) -->
+<script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.4.0/dist/js/tabler.min.js"></script>
+<script>
 
-    <!-- CONTENT -->
-    <div class="content">
-      <div id="main-content" class="ui grid">
-    <!-- left column: env list + selected env -->
-    <div id="left-column" class="four wide column">
-      <div class="ui inverted segment">
-        <h3 class="ui header">Environments</h3>
-        <div id="env-list" class="ui inverted vertical menu env-menu"></div>
-      </div>
-
-      <div class="ui inverted segment">
-        <h3 class="ui header">Selected environment</h3>
-        <table
-          id="selected-env-table"
-          class="ui very basic inverted compact table"
-        >
-          <tbody>
-            <tr>
-              <td class="icon-cell">
-                <i
-                  class="id badge outline icon"
-                  title="Environment name"
-                ></i>
-              </td>
-              <td class="value-cell" id="env-name"></td>
-            </tr>
-            <tr>
-              <td class="icon-cell">
-                <i
-                  class="linkify icon"
-                  title="Repository URL"
-                ></i>
-              </td>
-              <td class="value-cell" id="env-repo"></td>
-            </tr>
-            <tr>
-              <td class="icon-cell">
-                <i
-                  class="code branch icon"
-                  title="Git branch"
-                ></i>
-              </td>
-              <td class="value-cell" id="env-branch"></td>
-            </tr>
-            <tr>
-              <td class="icon-cell">
-                <i
-                  class="folder open outline icon"
-                  title="Git subpath"
-                ></i>
-              </td>
-              <td class="value-cell" id="env-subpath"></td>
-            </tr>
-            <tr>
-              <td class="icon-cell">
-                <i
-                  class="terminal icon"
-                  title="Working directory"
-                ></i>
-              </td>
-              <td class="value-cell" id="env-workdir"></td>
-            </tr>
-            <tr>
-              <td class="icon-cell">
-                <i
-                  class="hashtag icon"
-                  title="Last commit hash"
-                ></i>
-              </td>
-              <td class="value-cell" id="env-last-commit"></td>
-            </tr>
-            <tr>
-              <td class="icon-cell">
-                <i
-                  class="clock outline icon"
-                  title="Last commit date"
-                ></i>
-              </td>
-              <td class="value-cell" id="env-last-commit-date"></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <!-- right column: env vars + files -->
-    <div id="right-column" class="twelve wide column">
-      <div class="ui inverted segment">
-        <div class="segment-header">
-          <h3 class="ui header">Environment variables (JSON)</h3>
-          <i
-            class="copy icon copy-button"
-            title="Copy JSON to clipboard"
-            onclick="copyPre('env-json')"
-          ></i>
-        </div>
-        <pre id="env-json">Select environment…</pre>
-      </div>
-
-      <div class="ui inverted segment">
-        <div class="segment-header">
-          <h3 class="ui header">Environment variables as shell exports</h3>
-          <i
-            class="copy icon copy-button"
-            title="Copy exports to clipboard"
-            onclick="copyPre('env-export')"
-          ></i>
-        </div>
-        <pre id="env-export">Select environment…</pre>
-      </div>
-
-      <div class="ui inverted segment">
-        <div class="segment-header">
-          <h3 class="ui header">Spring config JSON preview</h3>
-          <i
-            class="copy icon copy-button"
-            title="Copy Spring JSON to clipboard"
-            onclick="copyPre('spring-preview')"
-          ></i>
-        </div>
-        <p style="font-size: 0.9rem; opacity: 0.8;">
-          Simulates a Spring Cloud Config client call for the currently selected environment.
-          Fill in <code>application</code>, <code>profile</code> and optional <code>label</code>.
-        </p>
-        <form class="ui inverted form" id="spring-form">
-          <div class="three fields">
-            <div class="field">
-              <label>Application</label>
-              <input
-                type="text"
-                id="spring-app"
-                placeholder="service-name"
-                value=""
-              />
-            </div>
-            <div class="field">
-              <label>Profile</label>
-              <input
-                type="text"
-                id="spring-profile"
-                placeholder="default"
-                value="default"
-              />
-            </div>
-            <div class="field">
-              <label>Label (optional)</label>
-              <input
-                type="text"
-                id="spring-label"
-                placeholder="main / release / empty"
-              />
-            </div>
-          </div>
-          <button class="ui primary button" type="submit">
-            Load preview
-          </button>
-          <span
-            id="spring-request-path"
-            style="margin-left: 1rem; font-size: 0.85rem; opacity: 0.7;"
-          ></span>
-        </form>
-        <pre id="spring-preview">Select environment and load preview…</pre>
-      </div>
-
-      <div class="ui inverted segment">
-        <div class="segment-header">
-          <h3 class="ui header">Files &amp; templated preview (git repo)</h3>
-          <i
-            class="copy icon copy-button"
-            title="Copy preview to clipboard"
-            onclick="copyPre('file-preview')"
-          ></i>
-        </div>
-
-        <div class="ui two column stackable grid">
-          <div class="six wide column">
-            <h4 class="ui header">Files</h4>
-            <div class="files-container">
-              <ul id="files-list" class="ui list">
-                <li>No environment selected.</li>
-              </ul>
-            </div>
-          </div>
-          <div class="ten wide column">
-            <h4 class="ui header">Preview (templated text)</h4>
-            <pre id="file-preview">
-Click a file to preview its content after template expansion.</pre>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script>
     // Filled in by the server: UiMeta { base_path, environments[] }
     const META = __META_JSON__;
 
@@ -587,23 +266,39 @@ Click a file to preview its content after template expansion.</pre>
         : null;
 
     function renderEnvList() {
-      const container = document.getElementById("env-list");
-      container.innerHTML = "";
+      // Legacy name kept: we no longer render a clickable list, only the <select>.
+      renderEnvSelect();
+    }
 
+
+    function renderEnvSelect() {
+      const select = document.getElementById("env-select");
+      if (!select) return;
+
+      select.innerHTML = "";
       META.environments.forEach((env) => {
-        const item = document.createElement("a");
-        item.className = "item" + (env.name === currentEnv ? " active" : "");
-        item.textContent = env.name;
-        item.onclick = () => {
-          currentEnv = env.name;
+        const opt = document.createElement("option");
+        opt.value = env.name;
+        opt.textContent = env.name;
+        select.appendChild(opt);
+      });
+
+      // Keep selection in sync
+      select.value = currentEnv || (META.environments[0] && META.environments[0].name) || "";
+
+      // Set handler once
+      if (!select.dataset.bound) {
+        select.addEventListener("change", () => {
+          if (!select.value) return;
+          currentEnv = select.value;
           renderEnvList();
           renderEnvDetails();
           if (META.auth_enabled) {
             loadEnvPanels();
           }
-        };
-        container.appendChild(item);
-      });
+        });
+        select.dataset.bound = "1";
+      }
     }
 
     function renderEnvDetails() {
@@ -712,6 +407,7 @@ Click a file to preview its content after template expansion.</pre>
           listEl.innerHTML = "";
           if (files.length === 0) {
             const li = document.createElement("li");
+            li.className = "list-group-item";
             li.textContent = "No files found in this environment.";
             listEl.appendChild(li);
             return;
@@ -719,17 +415,18 @@ Click a file to preview its content after template expansion.</pre>
 
           files.forEach((f) => {
             const li = document.createElement("li");
+            li.className = "list-group-item d-flex align-items-center";
 
             const icon = document.createElement("i");
-            icon.className = "file outline icon file-icon";
+            icon.className = "ti ti-file-text me-2 text-muted";
             icon.title = "Config file";
             li.appendChild(icon);
 
             const a = document.createElement("a");
-            a.className = "file-link";
+            a.className = "link-primary text-decoration-none";
             a.textContent = f;
-            a.href = "javascript:void(0)";
-            a.onclick = () => previewFile(env, f);
+            a.href = "#";
+            a.addEventListener("click", (ev) => { ev.preventDefault(); previewFile(env, f); });
             li.appendChild(a);
 
             listEl.appendChild(li);
@@ -737,7 +434,7 @@ Click a file to preview its content after template expansion.</pre>
         })
         .catch(() => {
           document.getElementById("files-list").innerHTML =
-            "<li>Failed to list files.</li>";
+            "<li class=\"list-group-item\">Failed to list files.</li>";
         });
     }
 
@@ -906,8 +603,8 @@ Click a file to preview its content after template expansion.</pre>
         }
         const leftCol = document.getElementById("left-column");
         if (leftCol) {
-          leftCol.classList.remove("four", "wide");
-          leftCol.classList.add("sixteen", "wide");
+          leftCol.classList.remove("col-xl-3");
+          leftCol.classList.add("col-xl-12");
         }
       }
 
@@ -944,7 +641,33 @@ Click a file to preview its content after template expansion.</pre>
 
     });
 
+  
   </script>
-  </div>
+<script>
+    // Simple theme toggle (Bootstrap 5.3 / Tabler)
+    (function () {
+      const key = "simple-config-ui-theme";
+      const root = document.documentElement;
+      const toggle = document.getElementById("theme-toggle");
+
+      function setTheme(t) {
+        root.setAttribute("data-bs-theme", t);
+      }
+
+      const saved = localStorage.getItem(key);
+      const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      const initial = saved || (prefersDark ? "dark" : "light");
+      setTheme(initial);
+
+      if (toggle) {
+        toggle.checked = initial === "dark";
+        toggle.addEventListener("change", () => {
+          const next = toggle.checked ? "dark" : "light";
+          setTheme(next);
+          localStorage.setItem(key, next);
+        });
+      }
+    })();
+  </script>
 </body>
 </html>
